@@ -1,28 +1,194 @@
 \chapter{Background and Related Work}
 \label{chap:background}
 
+This chapter reviews the concepts and prior art on which the present work is
+built. Section~\ref{sec:relational-vs-vector} contrasts relational and vector
+databases as two complementary ways of organising data for retrieval.
+Section~\ref{sec:llms} gives a short account of transformer-based language
+models and the limitations that motivate retrieval augmentation.
+Section~\ref{sec:embeddings} reviews the evolution of text representations up
+to the dense sentence embeddings used in this work.
+Section~\ref{sec:rag} describes the original Retrieval-Augmented Generation
+architecture of Lewis et al.~\cite{Lewis2020RAG}. Finally,
+Section~\ref{sec:related-work} positions the present work in the broader
+landscape of RAG systems.
+
 \section{Relational vs.\ Vector Databases}
 \label{sec:relational-vs-vector}
 
-% TODO: compare structured retrieval (SQL, full-text) with dense-vector retrieval.
+Relational databases, introduced by Codd in the early 1970s, organise data in
+tables with a fixed schema and allow exact retrieval through declarative SQL
+queries. They excel at transactions, joins, and aggregations over structured
+records, and modern engines such as PostgreSQL additionally offer full-text
+search indexes built on top of inverted lists. Full-text search matches
+\emph{lexical} tokens: a query for \texttt{contract OF employment} retrieves
+documents that contain these exact words (possibly with stemming and
+stop-word removal), but will miss a paraphrased passage such as
+\texttt{labour agreement} even though the meaning is the same.
+
+Vector databases take a different approach. Instead of indexing the tokens
+that occur in each document, they index a dense, fixed-dimensional vector
+that captures its \emph{semantic} content --- an \emph{embedding} --- computed
+by a neural encoder. At query time, the same encoder produces an embedding
+for the query, and the database returns the $k$ nearest neighbours in the
+embedding space under a similarity metric, typically cosine similarity or
+inner product. Because semantically similar passages are mapped to nearby
+points even if they share no surface tokens, vector search naturally handles
+paraphrases, synonyms, and translations.
+
+Exact nearest-neighbour search is $\mathcal{O}(nd)$ in the number $n$ of
+indexed vectors and their dimension $d$, which quickly becomes impractical.
+Modern vector databases therefore rely on \emph{approximate nearest-neighbour}
+(ANN) indexes that trade a controlled amount of recall for dramatic speed-ups.
+Johnson et al.~\cite{Johnson2021FAISS} introduced FAISS, which combines
+product quantisation with inverted-file indexes and GPU acceleration to
+support billion-scale search on a single machine. More recent systems such as
+HNSW (Hierarchical Navigable Small Worlds) have become the default choice in
+practical vector databases, including ChromaDB, because they offer a
+favourable trade-off between indexing cost and query time.
+
+The two paradigms are not mutually exclusive. A typical production system
+stores structured metadata (users, documents, audit logs) in a relational
+database, and delegates semantic retrieval to a vector database. This is
+exactly the architecture adopted by the present work, where PostgreSQL holds
+the user accounts and ChromaDB holds the per-user collections of document
+chunk embeddings.
 
 \section{Large Language Models}
 \label{sec:llms}
 
-% TODO: short primer on transformer-based LLMs and their limitations
-% (hallucination, stale knowledge, context window).
+The transformer architecture introduced by Vaswani et
+al.~\cite{Vaswani2017Attention} replaces the sequential recurrence of earlier
+neural language models with a fully parallel self-attention mechanism. Each
+layer computes, for every position in the sequence, a weighted combination of
+all other positions, where the weights are derived from the compatibility
+between pairs of positions. The resulting architecture scales efficiently
+during both training and inference, and it has become the foundation of
+virtually every state-of-the-art natural language processing model published
+since 2018.
+
+Large generative models trained on web-scale corpora --- the GPT family, the
+Llama family, Google's Gemini family --- can produce coherent text over long
+contexts and answer questions across an impressive range of topics. However,
+they share three structural limitations that are directly relevant to this
+work.
+
+\textbf{Frozen knowledge.} The facts a model knows are encoded in its weights
+during pre-training. Anything that happened after the training cutoff, or any
+document that was not part of the pre-training corpus, is effectively
+invisible to the model.
+
+\textbf{Hallucination.} When asked about a topic the model has not seen, it
+will still produce fluent output, often in the form of confident but
+fabricated statements. This behaviour is particularly damaging in
+domain-specific applications, where users cannot easily tell correct answers
+from invented ones.
+
+\textbf{Limited context window.} Even the largest generative models accept
+only a bounded amount of text in a single request. They cannot simply be
+given the entire corpus of a company at inference time. Some relevant subset
+must be selected, and the selection is the job of a retrieval component.
+
+These three limitations define the niche that RAG fills: retrieve the
+relevant subset at query time, feed it to the model as context, and ground
+the answer in auditable evidence.
 
 \section{Text Embeddings}
 \label{sec:embeddings}
 
-% TODO: dense embeddings, cosine similarity, Sentence-BERT family.
+The first generation of text representations was based on sparse
+bag-of-words counts, weighted by TF-IDF. Such representations match queries
+to documents by literal token overlap and fail on synonymy and paraphrase.
+The introduction of word2vec and GloVe embeddings in the mid-2010s replaced
+each word with a dense low-dimensional vector learnt from co-occurrence
+statistics, capturing semantic regularities such as \emph{king - man +
+woman $\approx$ queen}.
+
+Word-level embeddings are a poor starting point for retrieval, however,
+because they do not compose straightforwardly into sentence-level or
+paragraph-level representations. The breakthrough came with contextual
+encoders based on the transformer, BERT being the most influential. Reimers
+and Gurevych~\cite{Reimers2019SentenceBERT} showed how to fine-tune BERT in a
+Siamese configuration so that its \texttt{[CLS]} output becomes a sentence
+embedding suitable for cosine-similarity retrieval; their Sentence-BERT
+framework produces embeddings that remain the default baseline for many
+semantic-search applications today. The same paper also demonstrated that
+dense encoders can outperform classical retrieval methods on semantic
+textual similarity benchmarks.
+
+A parallel line of work focused on the retrieval task itself. Karpukhin et
+al.~\cite{Karpukhin2020DPR} introduced \emph{Dense Passage Retrieval} (DPR),
+a dual-encoder architecture in which one BERT encodes the query and a second
+one encodes the passages, both trained end-to-end with a contrastive
+objective that pulls positive pairs together and pushes negative pairs
+apart. DPR outperformed the traditional BM25 baseline on open-domain
+question answering and established dense retrieval as a serious competitor
+to lexical methods.
+
+For the practical system described in this thesis, we use Google's
+\texttt{text-embedding-004} model through the Gemini API. This is a
+pre-trained encoder that exposes a single embedding per input string and is
+optimised for retrieval; we do not fine-tune it, because the scale and
+licensing of the model makes fine-tuning both unnecessary and impractical
+for the scope of a master's thesis.
 
 \section{The Retrieval-Augmented Generation Paradigm}
 \label{sec:rag}
 
-% TODO: describe the RAG architecture proposed by Lewis et al.\ (2020).
+Lewis et al.~\cite{Lewis2020RAG} formalised Retrieval-Augmented Generation
+as an end-to-end architecture that jointly trains a dense retriever and a
+generative decoder. Given an input query $x$, the retriever returns the
+top-$k$ documents $z_1,\ldots,z_k$ from a non-parametric memory indexed as
+dense vectors, and the generator produces an output $y$ conditioned on both
+$x$ and the retrieved documents. The paper explored two variants ---
+RAG-Sequence, which conditions on a single retrieved document per generated
+token, and RAG-Token, which marginalises over the retrieved documents at
+every step --- and demonstrated improvements over purely parametric
+baselines on several open-domain QA tasks.
+
+In the years since the original paper, the term \emph{RAG} has broadened to
+denote any system that combines a retrieval step with a prompt-based
+generation step, regardless of whether the retriever and the generator are
+jointly trained. The practical recipe is now:
+
+\begin{enumerate}
+  \item split the corpus into chunks of a few hundred tokens;
+  \item encode each chunk with a pre-trained encoder and store the vector
+        in an ANN index;
+  \item at query time, encode the question, retrieve the top-$k$ chunks,
+        and build a prompt of the form
+        \texttt{answer the question using the context below};
+  \item pass the prompt to a frozen LLM and return the answer together with
+        the citations derived from the chunk metadata.
+\end{enumerate}
+
+This recipe sacrifices some of the end-to-end elegance of the original paper
+but dramatically simplifies deployment, because every component can be
+swapped for a commercial API or an off-the-shelf vector store. The present
+work follows this practical recipe.
 
 \section{Related Work}
 \label{sec:related-work}
 
-% TODO: summarise the five bibliography items and their relation to this work.
+Several open-source and commercial systems now offer RAG as a turnkey
+product. Among the open-source libraries, LangChain and LlamaIndex provide
+building blocks for document loading, chunking, embedding, retrieval, and
+prompt templating, and integrate with a wide range of vector stores. Among
+the commercial systems, Pinecone, Weaviate Cloud, and Google's Vertex AI
+Search expose managed vector databases with integrated embedding and
+retrieval pipelines.
+
+The contribution of the present work is not to compete with these systems
+on completeness, but to build a focused, well-engineered reference
+implementation from first principles, strictly isolated per user, and
+documented in enough detail to serve as a teaching example. The codebase
+avoids heavy orchestration frameworks in order to keep every step visible:
+a student reading the sources should be able to trace a question from the
+HTTP handler all the way down to the ChromaDB similarity search and the
+Gemini API call, without indirection.
+
+The use of \emph{per-user collections} as the isolation mechanism, rather
+than filter predicates on a shared collection, is deliberately simple and
+trades some scalability at very large user counts for strong semantic
+guarantees: it is impossible, by construction, for a query on one user's
+collection to leak results from another.

@@ -1,19 +1,164 @@
 \chapter{Introduction}
 \label{chap:introduction}
 
-% TODO: motivation — why vector databases and RAG matter today.
+Large language models (LLMs) such as those based on the transformer
+architecture of Vaswani et al.~\cite{Vaswani2017Attention} have transformed the
+way people interact with textual information, making it possible to ask
+questions in natural language and receive fluent, contextual answers. These
+models, however, share a fundamental limitation: the knowledge they rely on is
+encoded in their parameters during training and is therefore frozen in time,
+limited in scope to the pre-training corpus, and impossible to audit at the
+level of individual facts. When confronted with a domain the model has not
+seen, or with recent information, an LLM will frequently \emph{hallucinate} ---
+producing plausible but factually incorrect statements that are hard to
+distinguish from correct ones, especially for non-expert users. This is a
+serious obstacle in domains where the cost of a wrong answer is high, such as
+legal advice, medical information, or enterprise document search.
+
+\emph{Retrieval-Augmented Generation} (RAG), proposed by Lewis et
+al.~\cite{Lewis2020RAG} at NeurIPS 2020, addresses this limitation by
+decoupling the \emph{retrieval} of relevant knowledge from the \emph{generation}
+of the final answer. Instead of relying exclusively on the model's internal
+parameters, a RAG system first searches a dedicated knowledge store for
+passages relevant to the user's question, and then feeds these passages to the
+language model as additional context. The model is thus grounded in external,
+up-to-date, and auditable evidence, and can cite the sources of its claims.
+RAG has become the de facto architectural pattern for building domain-specific
+question-answering systems on top of general-purpose LLMs.
+
+The retrieval component of a RAG system is typically implemented with a
+\emph{vector database}, a specialised data store that indexes high-dimensional
+dense embeddings produced by a neural encoder. Given a query embedding, the
+database returns the $k$ nearest neighbours under a similarity metric (cosine
+or inner product), enabling semantic search that transcends the lexical
+matching of traditional full-text search engines. The rapid development of
+vector databases in recent years --- from the pioneering GPU-based search
+library FAISS~\cite{Johnson2021FAISS} to user-friendly systems such as
+ChromaDB, Pinecone, Weaviate, and Qdrant --- has made semantic retrieval
+accessible to a much broader audience of developers.
 
 \section{Motivation}
 \label{sec:motivation}
 
-% TODO: briefly describe the information retrieval problem addressed by RAG.
+Modern organisations accumulate large amounts of unstructured textual
+information --- contracts, regulations, menus, nutrition tables, internal
+policies, meeting notes --- that is traditionally accessed either by keyword
+search or by manually browsing folder hierarchies. Neither approach scales
+well: keyword search misses paraphrases and rewordings, while manual browsing
+depends on the user knowing where to look. At the same time, general-purpose
+chatbots built on LLMs cannot answer questions about private documents,
+because they have never seen them.
+
+A RAG system bridges this gap. It ingests the organisation's documents, stores
+them in a vector database, and allows any user to ask questions in natural
+language, receiving grounded answers with explicit source citations. The
+architecture is general enough to serve a law firm looking up clauses in
+collective contracts, a restaurant checking the ingredients of its dishes, or
+a research group searching its collection of papers.
+
+From the point of view of a student in a Databases master's programme,
+building a practical RAG system is an excellent occasion to bring together
+several lines of work:
+\begin{itemize}
+  \item \textbf{Database systems}, in both their relational and vector
+        flavours, and the trade-offs between exact lexical retrieval and
+        approximate semantic retrieval.
+  \item \textbf{Information retrieval}, and in particular the Dense Passage
+        Retrieval approach of Karpukhin et al.~\cite{Karpukhin2020DPR} that
+        established dense embeddings as a serious alternative to BM25.
+  \item \textbf{Natural language processing}, through sentence-level
+        embeddings such as those of Reimers and
+        Gurevych~\cite{Reimers2019SentenceBERT} and through large generative
+        models.
+  \item \textbf{Software engineering}, in the form of a layered, well-tested,
+        containerised backend and a modern frontend.
+\end{itemize}
 
 \section{Objectives}
 \label{sec:objectives}
 
-% TODO: list the objectives of the thesis and the practical system.
+The main objectives of this thesis are:
+
+\begin{enumerate}
+  \item To review the state of the art in information retrieval based on
+        vector databases, with an emphasis on the RAG paradigm and its main
+        building blocks: dense embeddings, approximate nearest-neighbour
+        search, and prompt-based grounding of language models.
+  \item To design and implement a RAG system that allows authenticated users
+        to upload PDF documents, asks questions in natural language against
+        their own private document collection, and receive answers with
+        verifiable source citations down to the page level.
+  \item To enforce strict data isolation between users, so that documents
+        uploaded by one account are invisible to every other account at both
+        the database and the retrieval layer.
+  \item To evaluate the system in terms of retrieval quality, answer
+        groundedness, and response latency, and to compare the semantic
+        retrieval component against PostgreSQL full-text search on the same
+        corpus.
+  \item To produce a reference implementation that is clean, containerised,
+        test-covered, and reproducible, so that it can serve both as the
+        defence of the thesis and as a starting point for future work on
+        retrieval-augmented systems.
+\end{enumerate}
+
+\section{Main Contributions}
+\label{sec:contributions}
+
+The concrete contributions of this work are the following:
+
+\begin{itemize}
+  \item A layered, typed, and test-driven FastAPI backend that separates
+        concerns between API routes, services, repositories, and domain
+        models, providing a blueprint for reproducible RAG applications.
+  \item An end-to-end ingestion pipeline that extracts text from PDFs with
+        PyMuPDF, chunks it into overlapping segments of approximately 500
+        tokens, computes embeddings using Google Gemini, and stores the
+        resulting vectors in a ChromaDB collection dedicated to the
+        uploading user.
+  \item A query pipeline that retrieves the top-$k$ chunks from the user's
+        collection, builds a prompt that binds the language model to the
+        retrieved evidence, and returns an answer together with
+        machine-readable citations $(\text{filename},\ \text{page})$.
+  \item A JWT-based authentication layer backed by bcrypt password hashing
+        and PostgreSQL persistence, including a set of demo accounts that
+        are seeded idempotently on first startup.
+  \item A React frontend built with Vite, Tailwind CSS, and the shadcn/ui
+        component system, supporting dark mode, document upload, and an
+        interactive chat page that displays source badges.
+  \item A Docker Compose configuration that orchestrates the entire stack
+        (PostgreSQL, FastAPI backend, React frontend served through nginx)
+        and exposes it on a single command.
+  \item An experimental evaluation comparing semantic retrieval with
+        PostgreSQL full-text search on representative document corpora,
+        together with measurements of ingestion and query latency.
+\end{itemize}
 
 \section{Structure of the Thesis}
 \label{sec:structure}
 
-% TODO: one paragraph per chapter.
+The remainder of this thesis is organised as follows.
+
+\textbf{Chapter~\ref{chap:background}} introduces the theoretical background
+necessary to understand the RAG paradigm. It contrasts relational and vector
+databases, surveys the evolution of text embeddings from TF-IDF through
+Sentence-BERT, and presents the original RAG architecture of Lewis et al.,
+placing the present work in the context of related systems.
+
+\textbf{Chapter~\ref{chap:architecture}} describes the high-level architecture
+of the proposed system. It details the ingestion and query pipelines, the
+per-user isolation strategy at the vector store level, and the authentication
+and session management layers.
+
+\textbf{Chapter~\ref{chap:implementation}} dives into the concrete
+implementation. It documents the technology stack, the layered backend
+organisation, the integration with ChromaDB and Google Gemini, the frontend
+structure, and the containerised deployment model.
+
+\textbf{Chapter~\ref{chap:evaluation}} presents the experimental evaluation.
+It defines the metrics, describes the evaluation corpora, reports quantitative
+results on retrieval quality and latency, and compares the system against a
+PostgreSQL full-text-search baseline.
+
+\textbf{Chapter~\ref{chap:conclusions}} summarises the contributions of the
+thesis, discusses the limitations of the present implementation, and outlines
+directions for future work.

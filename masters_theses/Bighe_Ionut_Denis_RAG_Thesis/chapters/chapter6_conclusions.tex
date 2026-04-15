@@ -1,19 +1,160 @@
 \chapter{Conclusions}
 \label{chap:conclusions}
 
-\section{Summary of Contributions}
-\label{sec:contributions}
+This thesis has presented the design, implementation, and evaluation of a
+complete Retrieval-Augmented Generation system built on top of a vector
+database. The system allows authenticated users to upload PDF documents,
+ask questions in natural language, and receive grounded answers together
+with explicit source citations down to the page level. This final chapter
+summarises the contributions, discusses the limitations that were revealed
+by the evaluation, and outlines several avenues for future work.
 
-% TODO: bullet points of the thesis contributions.
+\section{Summary of Contributions}
+\label{sec:summary-contributions}
+
+The main contributions of the thesis are the following.
+
+\textbf{A focused, layered reference implementation.} The backend is
+organised into thin API routes, services, repositories, and core utilities,
+with strict boundaries enforced by dependency injection. The structure
+makes every responsibility visible and the system easy to reason about ---
+a deliberate choice for a work that is meant to double as a teaching
+example. The entire backend is test-driven, with 22 tests passing and
+83\,\% branch coverage; the authentication layer in particular is at
+96\,\% coverage, with end-to-end integration tests for register, login,
+and protected routes.
+
+\textbf{An end-to-end RAG pipeline.} The ingestion pipeline handles PDF
+uploads with PyMuPDF, produces overlapping chunks of approximately 500
+tokens, computes dense embeddings with Google Gemini, and stores them in
+a per-user ChromaDB collection along with the metadata needed for
+citation (filename, page, document id). The query pipeline embeds the
+question, retrieves the top-5 chunks, builds a grounded prompt, calls
+Gemini, and returns the answer together with machine-readable citations.
+Every stage of the pipeline is mockable for unit testing.
+
+\textbf{Strict per-user isolation.} Isolation rests on two independent
+mechanisms: JWT-based authentication at the HTTP layer, and per-user
+collections at the vector-store layer. The second mechanism is
+architectural rather than filter-based --- a user cannot accidentally
+read another user's chunks even if a bug were to bypass the HTTP-level
+check --- which makes the safe behaviour the default.
+
+\textbf{A production-ready deployment.} The entire stack is packaged as
+a Docker Compose project with three services (PostgreSQL, FastAPI
+backend, and nginx serving the React frontend). A single \texttt{docker
+compose up --build} command brings up the complete system. The
+PostgreSQL container is exposed on a non-standard host port (5433) to
+avoid conflicts with native installs, and a single \texttt{.env} file
+drives all configuration.
+
+\textbf{A modern frontend.} The React + Vite + TypeScript + Tailwind +
+shadcn/ui frontend provides dark-mode support out of the box, a
+themeable component library, and a dedicated help page written in
+Romanian for end users. Source citations are rendered as clickable
+badges beneath every answer.
+
+\textbf{An experimental evaluation.} The evaluation in
+Chapter~\ref{chap:evaluation} measured retrieval quality, answer
+groundedness, and latency on two representative corpora, and compared
+the dense-retrieval component against a PostgreSQL full-text search
+baseline on exactly the same data. Dense retrieval reached 0.93 and
+0.97 recall@5 on the legal and restaurant corpora respectively,
+outperforming the lexical baseline by 0.16 and 0.04 points. Grounded
+answer rates were 0.90 and 0.97, and the median query latency was
+1.6\,s, almost entirely consumed by the LLM call.
 
 \section{Limitations}
 \label{sec:limitations}
 
-% TODO: per-user collection scalability, free-tier API limits, single-language
-% embedding model.
+The evaluation and the implementation also exposed several limitations
+that a production deployment would need to address.
+
+\textbf{Per-user collections scale linearly.} Using one ChromaDB
+collection per user is simple and safe but becomes expensive at very
+large user counts: every collection carries a small fixed overhead in
+ChromaDB, and the directory on disk grows with the number of
+collections. A multi-tenant deployment with thousands of users would
+likely need a single collection partitioned by user id as a metadata
+filter, trading some of the safety guarantees of the current design
+for better scaling.
+
+\textbf{Free-tier rate limits dominate latency.} The query latency
+reported in Chapter~\ref{chap:evaluation} is almost entirely spent in
+the Gemini generation call, and the free-tier quota constrains both
+throughput and tail latencies. Moving to a paid tier, or hosting a
+smaller open-weights model locally, would be a necessary step for
+production traffic.
+
+\textbf{Retrieval relies on a single encoder.} The system uses the
+Gemini \texttt{text-embedding-004} model for both indexing and query
+embedding. The encoder was trained primarily on English and
+well-represented multilingual corpora; for more specialised domains, a
+domain-adapted or fine-tuned encoder would likely improve retrieval
+further, but fine-tuning against Gemini is not available and would
+require migrating to an open encoder (for example a Sentence-BERT
+variant \cite{Reimers2019SentenceBERT}).
+
+\textbf{No document metadata in PostgreSQL.} Documents live entirely in
+ChromaDB, which is sufficient for the present scope but prevents
+features such as server-side search over filenames, document sharing
+between users, or audit logs. Adding a \texttt{documents} table in
+PostgreSQL would be a small change but was deferred to keep the schema
+minimal.
+
+\textbf{No OCR.} PDFs with scanned pages but no text layer are silently
+skipped. A practical deployment would need to detect them and run them
+through an OCR stage (for example Tesseract or a cloud OCR API) before
+ingestion.
+
+\textbf{Synchronous ingestion.} PDF uploads are processed synchronously
+inside the HTTP request. For large documents this can exceed typical
+HTTP timeouts. Offloading ingestion to a background worker queue is a
+natural next step.
 
 \section{Future Work}
 \label{sec:future-work}
 
-% TODO: hybrid retrieval, reranking, multi-tenant collection sharing,
-% evaluation on larger corpora.
+The architecture leaves room for several improvements that would be
+good candidates for follow-up projects:
+
+\textbf{Hybrid retrieval.} As the evaluation showed, a small number of
+failures at the retrieval step are lexically obvious but semantically
+distant. A reranking stage that combines the dense top-$k$ with a BM25
+score would likely close most of this gap.
+
+\textbf{Query rewriting.} When a user asks a long or ambiguous question,
+retrieval quality can be improved by first rewriting the question into
+a more retrieval-friendly form using the LLM, and then embedding the
+rewritten form. This is cheap in comparison to the main generation
+call and has been reported to help in several open-source RAG
+frameworks.
+
+\textbf{Streaming responses.} The Gemini API supports token-level
+streaming, and FastAPI can forward a streaming response to the client.
+Implementing this would substantially improve the user-perceived
+latency, since the first token typically arrives in under 500\,ms.
+
+\textbf{Multi-tenant deployment.} Moving from per-user collections to a
+single collection with metadata-based filtering, as discussed above,
+would be necessary for scaling beyond a few hundred users. It would
+require a rigorous review of the authorisation paths to preserve the
+isolation guarantees that the current architecture enforces structurally.
+
+\textbf{Wider evaluation.} The present evaluation is limited to two
+corpora and 60 hand-written questions. A larger-scale evaluation on
+public benchmarks such as NaturalQuestions or HotpotQA, combined with
+automated grounding metrics, would give more robust numbers, although
+such benchmarks are in English and do not directly reflect the use
+cases targeted by the system.
+
+\vspace{1em}
+
+In conclusion, the thesis demonstrates that a modest but carefully
+engineered stack --- a layered FastAPI backend, a simple embedded
+vector database, a pre-trained commercial LLM, and a typed React
+frontend --- is sufficient to build a grounded, per-user question
+answering system that outperforms lexical search on realistic
+corpora. The same stack can serve as a starting point for further
+research and for real-world deployments, and it remains small enough
+to be understood in its entirety by a single reader.

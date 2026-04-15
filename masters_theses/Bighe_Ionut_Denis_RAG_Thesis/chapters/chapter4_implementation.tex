@@ -1,35 +1,302 @@
 \chapter{Implementation}
 \label{chap:implementation}
 
+This chapter documents the concrete implementation of the architecture
+described in Chapter~\ref{chap:architecture}. Section~\ref{sec:stack} lists
+the technology choices and justifies them briefly. Sections~\ref{sec:backend-layering}
+through~\ref{sec:gemini-integration-impl} focus on the backend:
+layered organisation, PostgreSQL persistence, ChromaDB integration, and
+Gemini API wrapping. Section~\ref{sec:frontend-impl} covers the React
+frontend, and Section~\ref{sec:deployment-impl} describes the Docker Compose
+deployment.
+
 \section{Technology Stack}
 \label{sec:stack}
 
-% TODO: Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, ChromaDB, Google Gemini,
-% PyMuPDF, React, Vite, Tailwind, shadcn/ui, Docker.
+The implementation is written in Python 3.12 on the backend and TypeScript
+on the frontend. The main libraries and their roles are summarised in
+Table~\ref{tab:stack}.
 
-\section{Backend Services}
-\label{sec:backend-services}
+\begin{table}[h]
+\centering
+\caption{Main technology choices and their role in the system.}
+\label{tab:stack}
+\begin{tabular}{l l}
+\hline
+\textbf{Component} & \textbf{Library / version} \\
+\hline
+Web framework         & FastAPI 0.115 \\
+ASGI server           & uvicorn 0.30 \\
+ORM                   & SQLAlchemy 2.0 \\
+Configuration         & pydantic-settings 2.5 \\
+Password hashing      & passlib + bcrypt \\
+JWT                   & python-jose 3.3 \\
+PDF parsing           & PyMuPDF 1.24 \\
+Vector database       & ChromaDB 0.5 (persistent) \\
+LLM and embeddings    & google-generativeai 0.8 (Gemini) \\
+Relational database   & PostgreSQL 16 \\
+Testing               & pytest 8.3, pytest-cov, pytest-mock \\
+Frontend build        & Vite 8, TypeScript 6 \\
+UI framework          & React 19 \\
+Styling               & Tailwind CSS 4 \\
+UI components         & shadcn/ui (Radix-based) \\
+HTTP client           & axios 1.15 \\
+Routing               & React Router 7 \\
+Container orchestration & Docker Compose (v5 plugin) \\
+\hline
+\end{tabular}
+\end{table}
 
-% TODO: layered architecture (api, services, repositories, models, core).
+The choice of FastAPI is driven by three factors: built-in asynchronous
+support, automatic OpenAPI generation, and first-class integration with
+pydantic for request and response validation. The choice of ChromaDB over
+alternatives such as Qdrant, Weaviate, or Pinecone is driven by its
+embeddable mode: ChromaDB runs in-process with a persistent client and a
+simple directory on disk, which keeps the system self-contained and easy to
+reproduce. Gemini was chosen because it offers a generous free tier that
+covers both embeddings (\texttt{text-embedding-004}) and generation
+(\texttt{gemini-1.5-flash}), which is sufficient for both development and
+the experimental evaluation reported in Chapter~\ref{chap:evaluation}.
+
+\section{Backend Layering}
+\label{sec:backend-layering}
+
+The backend follows a strict layered organisation inspired by the
+repository and service patterns common in Spring and NestJS:
+
+\begin{verbatim}
+backend/
+  api/
+    routes/      # FastAPI routers; HTTP-level only
+    dependencies.py  # DI wiring, JWT middleware
+  services/      # business logic
+  repositories/  # data access (PostgreSQL + ChromaDB)
+  models/
+    schemas.py     # Pydantic request/response shapes
+    db_models.py   # SQLAlchemy ORM classes
+  core/
+    config.py      # pydantic-settings configuration
+    constants.py   # chunk size, top-k, model identifiers, ...
+    database.py    # engine, sessionmaker, get_db dependency
+    logging.py     # root logger setup
+    security.py    # bcrypt hashing, JWT encode/decode
+  main.py          # FastAPI app, lifespan hook, router wiring
+  tests/
+    unit/
+    integration/
+    conftest.py    # SQLite in-memory override, TestClient fixture
+\end{verbatim}
+
+Routes are intentionally thin: they validate the incoming payload through
+a pydantic schema, call the appropriate service, and translate
+domain-specific exceptions into HTTP status codes. Services contain the
+business logic and depend only on abstract repositories, which in turn are
+the only components that know about SQLAlchemy sessions or ChromaDB
+clients. This separation keeps the services trivially testable with
+in-memory SQLite or mocked ChromaDB clients.
+
+Dependency injection is implemented with FastAPI's \texttt{Depends}
+mechanism. For example, the authentication service is wired as follows:
+
+\begin{verbatim}
+def get_user_repository(session: Session = Depends(get_db)):
+    return UserRepository(session)
+
+def get_auth_service(repo: UserRepository = Depends(get_user_repository)):
+    return AuthService(repo)
+
+@router.post("/login")
+def login(payload: UserLoginRequest,
+          auth_service: AuthService = Depends(get_auth_service)):
+    ...
+\end{verbatim}
+
+In tests, the \texttt{get\_db} dependency is overridden with a function
+that yields a session bound to an in-memory SQLite engine (using
+SQLAlchemy's \texttt{StaticPool} so that every connection shares the same
+database), and the rest of the DI graph is assembled automatically by
+FastAPI.
+
+\section{PostgreSQL Persistence}
+\label{sec:postgres-impl}
+
+The relational schema is a single \texttt{users} table, mapped by the
+\texttt{User} ORM class. Its columns are defined with the SQLAlchemy 2.0
+typed \texttt{Mapped}/\texttt{mapped\_column} API, which provides
+compile-time type information and seamless integration with IDEs and
+type-checkers.
+
+Tables are created on application startup with a single call to
+\texttt{Base.metadata.create\_all}, executed inside the FastAPI
+\texttt{lifespan} hook. This is simpler than a full migration framework
+such as Alembic and is sufficient for a single-table schema that does not
+evolve. The same startup hook calls
+\texttt{AuthService.seed\_demo\_users}, which inserts the three demo
+accounts (\texttt{avocatura@demo.com}, \texttt{restaurant@demo.com},
+\texttt{admin@demo.com}) if they are not already present. The method is
+idempotent, so restarting the container is a safe no-op after the first
+run.
+
+Password hashing uses bcrypt through passlib with a cost factor of 12,
+which corresponds to approximately 250\,ms of CPU time per hash on a
+modern laptop. This cost is high enough to make brute-force attacks
+expensive but low enough to keep login latency below the threshold of
+perception.
+
+\section{JWT Authentication}
+\label{sec:jwt-impl}
+
+The JWT layer is implemented in \texttt{core/security.py} and exposed
+through the \texttt{get\_current\_user} FastAPI dependency.
+Tokens are signed with HS256 and a 32-byte secret loaded from the
+environment; the claim set is kept minimal --- a subject
+(\texttt{sub=<user\_id>}), an issued-at timestamp, an expiration
+timestamp, and a copy of the user's email for logging purposes. On every
+protected request, the dependency decodes the token, verifies its
+signature and expiration, looks up the user in PostgreSQL, and injects
+the resulting \texttt{User} row into the handler. A missing, malformed,
+or expired token results in a 401 response with the appropriate
+\texttt{WWW-Authenticate} header, preserving HTTP semantics.
+
+The authentication module is test-driven. Every behaviour --- successful
+registration, duplicate email, valid login, wrong password, unknown
+email, missing token, invalid token, protected route --- is exercised by
+a dedicated unit or integration test. The current test suite contains 22
+tests and reaches 83\,\% branch coverage across the backend, with
+\texttt{auth\_service} at 96\,\%, \texttt{user\_repository} at 100\,\%,
+and \texttt{api/routes/auth} at 100\,\%.
+
+\section{Document Ingestion with PyMuPDF}
+\label{sec:ingestion-impl}
+
+PDF handling is delegated to PyMuPDF (imported as \texttt{fitz}), which
+is substantially faster and more reliable than pure-Python alternatives
+such as PyPDF2. The ingestion service opens the uploaded file with
+\texttt{fitz.open(stream=...)}, iterates over the pages, and calls
+\texttt{page.get\_text("text")} to obtain the textual content of each
+page in reading order.
+
+The resulting text is split into chunks by a pure-Python helper. The
+chunking strategy is a sliding window of approximately 500 tokens with
+50 tokens of overlap between consecutive chunks. Token counts are
+approximated by splitting on whitespace --- this is conservative (actual
+subword-tokenised counts are usually slightly higher) but avoids
+importing a full tokenizer in the backend, which would add hundreds of
+megabytes to the container image.
+
+Each chunk produced by the chunker is accompanied by a metadata
+dictionary containing the original filename, the page number it was
+extracted from, and a shared \texttt{document\_id}, which is a UUID4
+generated once per document. These dictionaries flow unchanged through
+the rest of the pipeline, all the way to the final citation in the
+response.
 
 \section{Vector Store Integration}
-\label{sec:vector-store}
+\label{sec:vector-store-impl}
 
-% TODO: ChromaDB persistent client, per-user collections, metadata schema.
+ChromaDB is used in persistent mode with a single directory on disk as
+the store. The directory is mounted as a Docker volume
+(\texttt{/data/chroma}) so that restarts preserve the indexed data. The
+\texttt{VectorStore} repository encapsulates every call to the ChromaDB
+API and exposes three methods to the service layer:
 
-\section{Embeddings and LLM Integration}
-\label{sec:gemini-integration}
+\begin{itemize}
+  \item \texttt{add\_chunks(user\_id, chunks, embeddings, metadatas)},
+        which upserts a batch of chunks into the user's collection;
+  \item \texttt{query(user\_id, query\_embedding, top\_k)}, which
+        returns a list of \texttt{(chunk\_text, SourceCitation)} tuples;
+  \item \texttt{delete\_document(user\_id, document\_id)}, which
+        removes every chunk sharing the given \texttt{document\_id}
+        from the user's collection.
+\end{itemize}
 
-% TODO: Google Gemini embeddings model and generation model, rate-limit
-% handling, retry strategy.
+Collections are created lazily on first access. Their names follow the
+pattern \texttt{user\_<id>}, with \texttt{<id>} taken from the user's
+primary key in PostgreSQL; this guarantees that the namespace of
+collections is exactly the namespace of user ids and prevents any
+accidental cross-user access.
 
-\section{Frontend Application}
-\label{sec:frontend}
+\section{Gemini API Integration}
+\label{sec:gemini-integration-impl}
 
-% TODO: React router structure, shadcn/ui components, dark-mode theming,
-% source-badge display.
+The Gemini integration is encapsulated in \texttt{EmbeddingService}
+(used during ingestion and for query embedding) and inside
+\texttt{QueryService} (used for answer generation). Both wrap the
+\texttt{google.generativeai} SDK behind a narrow interface, which makes
+them trivial to mock in unit tests and simplifies the eventual
+replacement of Gemini with another LLM provider.
 
-\section{Deployment}
-\label{sec:deployment}
+Two Gemini models are used:
 
-% TODO: Docker compose setup, environment variables, volume layout.
+\begin{itemize}
+  \item \texttt{models/text-embedding-004} --- a 768-dimensional dense
+        embedding model optimised for retrieval. It is applied to both
+        document chunks during ingestion and to queries at search time.
+  \item \texttt{models/gemini-1.5-flash} --- a fast, large-context
+        generative model with a context window of up to 1\,million
+        tokens. For the present system the prompt rarely exceeds a few
+        thousand tokens, but the large window leaves room for future
+        experiments with higher values of $k$.
+\end{itemize}
+
+Both the embedding and the generation calls are guarded by explicit
+error handling: API failures are caught, logged with their payload, and
+surfaced as HTTP 502 (``bad gateway'') to the client, so that the
+frontend can show a dedicated error message instead of an opaque 500.
+
+\section{Frontend Implementation}
+\label{sec:frontend-impl}
+
+The frontend is a Vite-based React 19 application written in TypeScript.
+Styling is done with Tailwind CSS~4 using CSS variables for theme
+colours; shadcn/ui provides the component primitives (button, card,
+dialog, badge, sidebar, skeleton, etc.) as source files that are copied
+into the project rather than imported from a package, giving full
+ownership of the component code.
+
+The top-level \texttt{App} component defines a React Router tree with
+the following routes:
+
+\begin{itemize}
+  \item \texttt{/login} and \texttt{/register} --- unauthenticated
+        entry points, each a single centred card;
+  \item \texttt{/dashboard} --- the authenticated home, listing the
+        user's uploaded documents and exposing an upload dialog;
+  \item \texttt{/chat} --- the RAG interface, with a chat log, a
+        question input, and source badges rendered below every answer;
+  \item \texttt{/how-to-use} --- a Romanian-language help page aimed
+        at end users, explaining how to upload a PDF, how to ask
+        questions, how to read the answer and its citations, and what
+        the current limitations are.
+\end{itemize}
+
+A \texttt{ThemeProvider} at the root of the tree manages dark mode by
+toggling a class on the \texttt{html} element; the preference is
+persisted in \texttt{localStorage} under a dedicated key. HTTP
+communication with the backend goes through a single axios instance
+that reads the base URL from a Vite environment variable and
+automatically attaches the stored JWT to every outgoing request.
+
+\section{Deployment with Docker Compose}
+\label{sec:deployment-impl}
+
+Three services are defined in \texttt{docker-compose.yml}:
+\texttt{postgres}, \texttt{backend}, and \texttt{frontend}. PostgreSQL
+runs unchanged from the official \texttt{postgres:16-alpine} image and
+is exposed on host port 5433, as discussed in
+Section~\ref{sec:deployment-model}. The backend uses a Python 3.12-slim
+base image, installs the Python dependencies from
+\texttt{requirements.txt}, copies the application source, and runs
+uvicorn on port 8000. The frontend is built in a first Docker stage
+with Node 20, then its \texttt{dist/} folder is copied into an
+\texttt{nginx:alpine} image and served on port 80; an nginx
+\texttt{location /api/} block proxies requests to the backend service
+inside the Docker network.
+
+Environment variables are provided through a single \texttt{.env} file
+at the root of the \texttt{rag\_application/} folder, which is ignored
+by git. The \texttt{.env.example} file committed to the repository
+lists every expected variable with a placeholder value, so that a new
+developer can clone the repository, copy the example, fill in the
+Gemini API key, and run \texttt{docker compose up --build} to get a
+fully working stack.

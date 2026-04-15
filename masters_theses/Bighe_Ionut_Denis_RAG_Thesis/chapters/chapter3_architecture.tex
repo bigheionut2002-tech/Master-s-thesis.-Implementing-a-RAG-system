@@ -1,29 +1,197 @@
 \chapter{System Architecture}
 \label{chap:architecture}
 
+This chapter describes the architecture of the proposed RAG system at a
+level of abstraction that is independent of the specific technologies used
+to implement it. Concrete technology choices --- FastAPI, SQLAlchemy,
+ChromaDB, Google Gemini, React, Docker --- are discussed in the next chapter.
+
 \section{Overview}
 \label{sec:architecture-overview}
 
-% TODO: high-level architecture diagram and component description.
+The system follows a classical three-tier structure. A single-page web
+application running in the user's browser issues HTTP requests to a backend
+REST API. The backend is organised in layers that separate transport,
+business logic, and persistence; it owns two distinct storage back-ends: a
+relational database for user accounts and session data, and a vector
+database for document chunk embeddings. A third external dependency --- the
+Google Gemini API --- provides both the embedding model used during
+ingestion and the generative model used at query time.
+
+Five actors participate in every user interaction:
+
+\begin{enumerate}
+  \item the \textbf{browser}, which serves the React application and holds
+        the JWT access token in \texttt{localStorage};
+  \item the \textbf{backend}, which receives HTTP requests, validates
+        tokens, and orchestrates the business logic;
+  \item the \textbf{relational database} (PostgreSQL), which stores user
+        records;
+  \item the \textbf{vector database} (ChromaDB), which stores embeddings
+        together with their metadata;
+  \item the \textbf{external LLM service} (Gemini), which computes
+        embeddings and generates the final answers.
+\end{enumerate}
+
+The backend is the only component allowed to talk to the databases and the
+LLM service. The browser never holds the API key of Gemini, never connects
+to ChromaDB directly, and never sees another user's data.
 
 \section{Ingestion Pipeline}
 \label{sec:ingestion}
 
-% TODO: PDF upload, PyMuPDF extraction, chunking, embedding, storage.
+The ingestion pipeline turns a raw PDF upload into a set of indexed
+embeddings. Its five stages are:
+
+\begin{enumerate}
+  \item \textbf{Upload.} The authenticated user submits a PDF through an
+        HTTP POST request that carries the file as a multipart form and the
+        JWT access token in the \texttt{Authorization} header. The backend
+        validates the content type (\texttt{application/pdf}) and rejects
+        files larger than a configurable maximum (20\,MB by default).
+  \item \textbf{Text extraction.} PyMuPDF opens the PDF in memory and
+        produces, for every page, a string containing its textual content.
+        Pages that are empty or contain only scanned images without OCR are
+        skipped with a warning.
+  \item \textbf{Chunking.} Each page's text is split into overlapping
+        chunks of approximately 500 tokens, with an overlap of 50 tokens
+        between consecutive chunks. The overlap ensures that a semantic
+        unit straddling the chunk boundary is never lost at retrieval
+        time. Each chunk carries the page number in its metadata.
+  \item \textbf{Embedding.} The chunks of a document are sent to the Gemini
+        embedding model in batches, producing one dense vector per chunk.
+        Batching reduces both latency and the number of API calls, which
+        matters in the free-tier quota used for development.
+  \item \textbf{Indexing.} The chunks, their metadata, and their embedding
+        vectors are appended to the ChromaDB collection dedicated to the
+        uploading user. The collection name follows a deterministic pattern
+        (\texttt{user\_<id>}) that makes it trivial for the backend to
+        route subsequent queries to the right collection.
+\end{enumerate}
+
+Once the pipeline completes, the backend returns a \texttt{DocumentMetadata}
+response containing the internal document id, the original filename, the
+number of pages, and the number of resulting chunks. The metadata is stored
+in ChromaDB as part of each chunk, so that listing and deletion can be
+implemented purely through vector store operations, without a separate
+PostgreSQL table for documents.
 
 \section{Query Pipeline}
 \label{sec:query-pipeline}
 
-% TODO: query embedding, similarity search, prompt construction, LLM call,
-% source attribution.
+The query pipeline implements the RAG recipe described in
+Section~\ref{sec:rag}. Given a natural-language question from a logged-in
+user, it executes the following steps:
+
+\begin{enumerate}
+  \item \textbf{Authentication.} The \texttt{Authorization: Bearer <token>}
+        header is validated by the JWT middleware. If the token is missing,
+        expired, or tampered with, the request is rejected with HTTP
+        401 before any other work is done.
+  \item \textbf{Query embedding.} The user's question is passed to the
+        same Gemini embedding model used during ingestion, producing a
+        single query vector.
+  \item \textbf{Similarity search.} ChromaDB is queried for the top-$k$
+        nearest chunks inside the current user's collection. With
+        $k=5$, experimental experience shows that the retrieved set almost
+        always contains the evidence needed to answer the question, while
+        remaining small enough to fit in the LLM's prompt budget.
+  \item \textbf{Prompt construction.} The backend assembles a prompt
+        consisting of a system instruction (\texttt{answer using only the
+        context below; if the answer is not in the context, say so}),
+        the retrieved chunks in order, and the original question. Each
+        retrieved chunk is prefixed with a short header containing its
+        filename and page number so that the model can refer to them.
+  \item \textbf{Generation.} The prompt is sent to the Gemini generative
+        model, which returns a natural-language answer.
+  \item \textbf{Citation extraction.} The backend inspects the metadata of
+        the retrieved chunks and produces a list of
+        \texttt{(filename, page)} pairs, which is returned to the client
+        alongside the answer text.
+\end{enumerate}
+
+The final JSON response has the shape
+
+\begin{verbatim}
+{
+  "answer": "The probation period is 90 days per the
+             collective contract.",
+  "sources": [
+    {"filename": "contract_colectiv_2024.pdf", "page": 12},
+    {"filename": "regulament_intern.pdf",      "page":  4}
+  ]
+}
+\end{verbatim}
+
+\noindent which is the format consumed by the frontend chat interface.
 
 \section{Data Model}
 \label{sec:data-model}
 
-% TODO: PostgreSQL users table and per-user ChromaDB collections.
+The relational part of the data model is intentionally minimal. A single
+table, \texttt{users}, holds the authenticated accounts. Its columns are
+the auto-incremented primary key \texttt{id}, the unique \texttt{email},
+the \texttt{hashed\_password} computed with bcrypt, and the
+\texttt{created\_at} timestamp. No document metadata is stored in
+PostgreSQL; documents live entirely in the vector database. This decision
+simplifies the implementation but would need to be revisited in a
+production system that requires features such as document sharing or
+server-side search over filenames.
+
+The vector store uses one ChromaDB collection per user. Every chunk stored
+in a collection carries three mandatory metadata fields:
+
+\begin{itemize}
+  \item \texttt{document\_id} --- a UUID assigned when the document is
+        ingested; identical for every chunk of the same document.
+  \item \texttt{filename} --- the original name of the uploaded file.
+  \item \texttt{page} --- the page number the chunk was extracted from
+        (1-indexed, as is conventional in PDF tooling).
+\end{itemize}
+
+Because each collection is named after a specific user id, no additional
+filter is needed at query time: membership in a collection is itself the
+authorisation check.
 
 \section{Authentication and User Isolation}
-\label{sec:auth}
+\label{sec:auth-architecture}
 
-% TODO: JWT-based auth, bcrypt password hashing, per-user vector collection
-% isolation.
+Authentication is handled by a JWT middleware built on top of FastAPI's
+\texttt{OAuth2PasswordBearer}. The flow is standard:
+
+\begin{enumerate}
+  \item The user registers with an email and a password. The password is
+        hashed with bcrypt (cost factor 12) before being stored in
+        PostgreSQL.
+  \item The user logs in with the same credentials. The backend verifies
+        the password against the stored hash and, on success, issues a
+        signed JWT with a 24-hour lifetime. The token's \texttt{sub}
+        claim contains the user id, and its payload also includes the
+        email for logging purposes.
+  \item On every subsequent request to a protected endpoint, the
+        middleware decodes and validates the JWT, loads the user row
+        from PostgreSQL, and injects it into the request handler as a
+        dependency.
+\end{enumerate}
+
+Data isolation rests on two complementary mechanisms. First, at the HTTP
+layer, every route that accesses documents or issues queries depends on
+\texttt{get\_current\_user}: a request without a valid token is rejected
+before any business logic is executed. Second, at the vector store
+layer, collections are named after user ids, so a query executed on
+behalf of user \texttt{A} cannot read chunks belonging to user \texttt{B}
+even if a programming error at the HTTP layer were to occur. This is a
+form of defence in depth: the architecture makes the safe case the
+only case that can actually run.
+
+\section{Deployment Model}
+\label{sec:deployment-model}
+
+The entire stack is packaged as a Docker Compose project with three
+services: PostgreSQL, the FastAPI backend, and an nginx container serving
+the compiled React frontend. Volumes are used to persist the PostgreSQL
+data directory, the ChromaDB store, and the uploaded PDFs. The PostgreSQL
+container is exposed on a non-standard host port (5433 instead of 5432)
+so that it does not conflict with a native PostgreSQL instance that may
+already be running on the developer's machine. Details of the
+containerisation are given in Section~\ref{sec:deployment-impl}.
