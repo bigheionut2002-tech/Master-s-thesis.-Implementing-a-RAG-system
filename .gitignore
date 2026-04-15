@@ -1,0 +1,75 @@
+# --- Private / secrets ---
+PRIVATE_DOCS.md
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# --- Node / frontend ---
+node_modules/
+.pnpm-store/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# --- Runtime data ---
+chroma_db/
+uploads/
+logs/
+*.log
+
+# --- LaTeX build artifacts ---
+*.aux
+*.bbl
+*.blg
+*.brf
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.out
+*.synctex.gz
+*.toc
+*.run.xml
+
+# --- IDE / OS ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+
+# --- Claude Code workspace settings (root only; per-project .claude/skills/
+# installs inside rag_application/ are intentional and tracked). ---
+/.claude/
+
+# --- Docker ---
+.docker/
