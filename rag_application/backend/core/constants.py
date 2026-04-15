@@ -19,9 +19,9 @@ CHUNK_OVERLAP_TOKENS: int = 50
 # --- Retrieval ---
 TOP_K_RESULTS: int = 5
 
-# --- Gemini model identifiers (free tier) ---
-GEMINI_EMBEDDING_MODEL: str = "models/text-embedding-004"
-GEMINI_GENERATION_MODEL: str = "models/gemini-1.5-flash"
+# --- Gemini model identifiers (free tier, verified via list_models 2026-04) ---
+GEMINI_EMBEDDING_MODEL: str = "models/gemini-embedding-001"
+GEMINI_GENERATION_MODEL: str = "models/gemini-2.5-flash"
 
 # --- Authentication ---
 JWT_ALGORITHM: str = "HS256"
