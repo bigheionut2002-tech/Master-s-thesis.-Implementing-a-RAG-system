@@ -1,63 +1,128 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { FileText, MessageSquare, ShieldCheck, Sparkles } from "lucide-react"
+
+import { Badge } from "@/components/ui/badge"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 
 export function HowToUse() {
   return (
-    <div className="mx-auto min-h-screen max-w-3xl p-6">
-      <h1 className="mb-6 text-3xl font-semibold">Cum folosești aplicația</h1>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-semibold tracking-tight">Cum folosești aplicația</h1>
+        <p className="text-sm text-muted-foreground">
+          Un ghid scurt pentru cineva care folosește aplicația pentru prima dată.
+        </p>
+      </div>
+
       <Card>
         <CardHeader>
-          <CardTitle>Ghid rapid</CardTitle>
+          <CardTitle>Ce face aplicația</CardTitle>
           <CardDescription>
-            Patru pași simpli ca să obții primul răspuns din documentele tale.
+            Pe scurt: încarci documente PDF, pui întrebări în limbaj natural,
+            primești răspunsuri fundamentate pe sursele din propriile tale fișiere.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6 text-sm leading-6">
-          <section>
-            <h2 className="mb-2 text-base font-medium">1. Încarcă un PDF</h2>
-            <p className="text-muted-foreground">
-              Mergi la <strong>Documente</strong> și apasă <em>Upload</em>. Alege un fișier
-              PDF — aplicația îl extrage, îl împarte în fragmente și îl indexează automat.
-              Limită: un fișier pe rând, maxim 20&nbsp;MB.
-            </p>
-          </section>
+        <CardContent className="text-sm leading-6 text-muted-foreground">
+          <p>
+            Aplicația citește textul fiecărui PDF pe care îl încarci, îl împarte în
+            fragmente mici, calculează o reprezentare matematică a înțelesului lor
+            (<em>embedding</em>) și o stochează într-o bază de date vectorială. Când
+            pui o întrebare, sistemul caută fragmentele cele mai apropiate semantic,
+            le trimite ca și context unui model de limbaj și îți returnează un
+            răspuns împreună cu sursele exacte (fișier și pagină).
+          </p>
+        </CardContent>
+      </Card>
 
-          <Separator />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <StepCard
+          icon={<FileText className="h-5 w-5" />}
+          step="Pasul 1"
+          title="Încarcă un PDF"
+          description="Mergi la pagina Documents și apasă Upload PDF. Alege un fișier — aplicația îl procesează automat și îl indexează. Limita este de 20 MB per fișier. Merg doar PDF-uri cu text (nu scanări)."
+        />
+        <StepCard
+          icon={<MessageSquare className="h-5 w-5" />}
+          step="Pasul 2"
+          title="Pune o întrebare"
+          description='Deschide pagina Chat și scrie o întrebare în limbaj natural, de exemplu: „Care este perioada de probă conform contractului?"'
+        />
+        <StepCard
+          icon={<Sparkles className="h-5 w-5" />}
+          step="Pasul 3"
+          title="Citește răspunsul și sursele"
+          description="Răspunsul este generat doar pe baza fragmentelor relevante din documentele tale. Sub răspuns apar badge-uri cu numele fișierului și pagina exactă. Dacă un răspuns nu se află în documente, aplicația îți spune clar acest lucru."
+        />
+        <StepCard
+          icon={<ShieldCheck className="h-5 w-5" />}
+          step="Pasul 4"
+          title="Documentele tale sunt izolate"
+          description="Fiecare utilizator are propria colecție de documente. Nici un alt utilizator nu poate vedea sau interoga fișierele tale. Poți șterge un document oricând din pagina Documents."
+        />
+      </div>
 
-          <section>
-            <h2 className="mb-2 text-base font-medium">2. Pune o întrebare</h2>
-            <p className="text-muted-foreground">
-              Deschide pagina <strong>Chat</strong> și scrie o întrebare în limbaj natural,
-              de exemplu: <em>„Care este perioada de probă în contractul colectiv?”</em>
-            </p>
-          </section>
-
-          <Separator />
-
-          <section>
-            <h2 className="mb-2 text-base font-medium">3. Citește răspunsul și sursele</h2>
-            <p className="text-muted-foreground">
-              Răspunsul este generat de model folosind doar fragmentele relevante din
-              documentele tale. Sub răspuns apar <strong>badge-uri</strong> cu fișierul și
-              pagina exactă de unde a fost extrasă fiecare informație — apasă pe ele ca să
-              verifici sursa.
-            </p>
-          </section>
-
-          <Separator />
-
-          <section>
-            <h2 className="mb-2 text-base font-medium">4. Limitări</h2>
-            <ul className="list-disc space-y-1 pl-6 text-muted-foreground">
-              <li>Se acceptă doar fișiere PDF (fără Word, Excel sau scanări cu OCR).</li>
-              <li>Fișierele tale sunt izolate — nu sunt vizibile altor utilizatori.</li>
-              <li>
-                Modelul poate greși. Folosește badge-urile cu sursele pentru verificare.
-              </li>
-            </ul>
-          </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Limitări</CardTitle>
+          <CardDescription>Lucruri de știut înainte de a folosi aplicația pentru ceva important.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm leading-6 text-muted-foreground">
+          <ul className="list-disc space-y-1 pl-6">
+            <li>Se acceptă doar PDF-uri cu strat de text. Scanările fără OCR sunt ignorate.</li>
+            <li>Maxim 20 MB per fișier încărcat.</li>
+            <li>
+              Modelul poate greși în cazuri rare. Folosește întotdeauna badge-urile
+              cu sursele pentru a verifica răspunsul.
+            </li>
+            <li>
+              Răspunsurile sunt generate prin API-ul Gemini. În timpul utilizării
+              intensive, modelul poate avea latențe ușor mai mari.
+            </li>
+          </ul>
+          <Separator className="my-4" />
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Tag-uri:</span>
+            <Badge variant="secondary">RAG</Badge>
+            <Badge variant="secondary">Vector Database</Badge>
+            <Badge variant="secondary">ChromaDB</Badge>
+            <Badge variant="secondary">Google Gemini</Badge>
+          </div>
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+interface StepCardProps {
+  icon: React.ReactNode
+  step: string
+  title: string
+  description: string
+}
+
+function StepCard({ icon, step, title, description }: StepCardProps) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10 text-foreground">
+            {icon}
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              {step}
+            </p>
+            <CardTitle className="text-base">{title}</CardTitle>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="text-sm leading-6 text-muted-foreground">{description}</CardContent>
+    </Card>
   )
 }
