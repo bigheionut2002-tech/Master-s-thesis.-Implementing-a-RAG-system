@@ -30,6 +30,7 @@ class UserPublic(BaseModel):
 class SourceCitation(BaseModel):
     filename: str
     page: int
+    page_image_b64: str = ""
 
 
 class QueryRequest(BaseModel):
@@ -46,3 +47,16 @@ class DocumentMetadata(BaseModel):
     filename: str
     num_pages: int
     num_chunks: int
+
+
+class ChunkPoint(BaseModel):
+    id: str
+    text: str
+    filename: str
+    page: int
+    x: float
+    y: float
+
+
+class VectorMapResponse(BaseModel):
+    points: list[ChunkPoint]

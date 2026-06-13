@@ -52,6 +52,7 @@ export interface DocumentMetadata {
 export interface SourceCitation {
   filename: string
   page: number
+  page_image_b64: string
 }
 
 export interface QueryResponse {
@@ -107,5 +108,23 @@ export async function apiDeleteDocument(documentId: string): Promise<void> {
 
 export async function apiQuery(question: string): Promise<QueryResponse> {
   const { data } = await api.post<QueryResponse>("/query", { question })
+  return data
+}
+
+export interface ChunkPoint {
+  id: string
+  text: string
+  filename: string
+  page: number
+  x: number
+  y: number
+}
+
+export interface VectorMapResponse {
+  points: ChunkPoint[]
+}
+
+export async function apiGetVectorMap(): Promise<VectorMapResponse> {
+  const { data } = await api.get<VectorMapResponse>("/documents/vector-map")
   return data
 }

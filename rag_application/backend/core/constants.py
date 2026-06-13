@@ -13,8 +13,8 @@ MAX_UPLOAD_SIZE_BYTES: int = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 ALLOWED_UPLOAD_MIME_TYPES: tuple[str, ...] = ("application/pdf",)
 
 # --- Chunking ---
-CHUNK_SIZE_TOKENS: int = 500
-CHUNK_OVERLAP_TOKENS: int = 50
+CHUNK_SIZE_TOKENS: int = 200
+CHUNK_OVERLAP_TOKENS: int = 30
 
 # --- Retrieval ---
 TOP_K_RESULTS: int = 5

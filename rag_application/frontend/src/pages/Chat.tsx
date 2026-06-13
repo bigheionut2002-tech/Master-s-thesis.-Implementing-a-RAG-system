@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { apiQuery, extractErrorMessage, type SourceCitation } from "@/lib/api"
@@ -143,23 +144,69 @@ interface AssistantBubbleProps {
 }
 
 function AssistantBubble({ content, sources }: AssistantBubbleProps) {
+  const [previewSource, setPreviewSource] = useState<SourceCitation | null>(null)
+
   return (
-    <div className="flex justify-start">
-      <Card className={cn("max-w-[85%]")}>
-        <CardContent className="space-y-3 p-4">
-          <p className="whitespace-pre-wrap text-sm leading-6">{content}</p>
-          {sources.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {sources.map((source, index) => (
-                <Badge key={`${source.filename}-${source.page}-${index}`} variant="secondary">
-                  {source.filename} · p.{source.page}
-                </Badge>
-              ))}
-            </div>
+    <>
+      <div className="flex justify-start">
+        <Card className={cn("max-w-[85%]")}>
+          <CardContent className="space-y-3 p-4">
+            <p className="whitespace-pre-wrap text-sm leading-6">{content}</p>
+            {sources.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {sources.map((source, index) => (
+                  <Badge
+                    key={`${source.filename}-${source.page}-${index}`}
+                    variant="secondary"
+                    className={cn(
+                      source.page_image_b64
+                        ? "cursor-pointer hover:bg-primary hover:text-primary-foreground transition-colors"
+                        : "cursor-default",
+                    )}
+                    onClick={() => source.page_image_b64 && setPreviewSource(source)}
+                  >
+                    {source.filename} · p.{source.page}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+
+      <PagePreviewModal
+        source={previewSource}
+        onClose={() => setPreviewSource(null)}
+      />
+    </>
+  )
+}
+
+interface PagePreviewModalProps {
+  source: SourceCitation | null
+  onClose: () => void
+}
+
+function PagePreviewModal({ source, onClose }: PagePreviewModalProps) {
+  return (
+    <Dialog open={source !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="text-sm font-medium truncate">
+            {source?.filename} — page {source?.page}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 overflow-auto rounded border bg-muted/20 p-2">
+          {source?.page_image_b64 ? (
+            <img
+              src={`data:image/png;base64,${source.page_image_b64}`}
+              alt={`${source.filename} page ${source.page}`}
+              className="w-full h-auto"
+            />
           ) : null}
-        </CardContent>
-      </Card>
-    </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 

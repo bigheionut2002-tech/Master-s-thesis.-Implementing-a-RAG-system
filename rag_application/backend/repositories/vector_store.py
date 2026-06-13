@@ -11,11 +11,12 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import numpy as np
+
 from chromadb.api import ClientAPI
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 from core.constants import CHROMA_COLLECTION_PREFIX
-from models.schemas import SourceCitation
 
 
 class _NoopEmbeddingFunction(EmbeddingFunction[Documents]):
@@ -77,28 +78,99 @@ class VectorStore:
         user_id: int,
         query_embedding: list[float],
         top_k: int,
-    ) -> list[tuple[str, SourceCitation]]:
-        """Return the top-``top_k`` chunks for the given user, ordered by distance."""
+    ) -> list[tuple[str, dict]]:
+        """Return the top-``top_k`` chunks for the given user, ordered by distance.
+
+        Each element is ``(chunk_text, metadata)`` where *metadata* contains at
+        least ``filename``, ``page``, and ``bbox`` (empty string for legacy chunks).
+        Falls back to brute-force cosine search when the HNSW index raises a
+        RuntimeError (common with very small collections).
+        """
         collection = self._get_collection(user_id)
         if collection.count() == 0:
             return []
 
         effective_k = min(top_k, collection.count())
-        result = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=effective_k,
-        )
-        documents = (result.get("documents") or [[]])[0]
-        metadatas = (result.get("metadatas") or [[]])[0]
-
-        pairs: list[tuple[str, SourceCitation]] = []
-        for document, metadata in zip(documents, metadatas, strict=True):
-            citation = SourceCitation(
-                filename=str(metadata["filename"]),
-                page=int(metadata["page"]),
+        try:
+            result = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=effective_k,
             )
-            pairs.append((document, citation))
+            documents = (result.get("documents") or [[]])[0]
+            metadatas = (result.get("metadatas") or [[]])[0]
+            pairs: list[tuple[str, dict]] = []
+            for document, metadata in zip(documents, metadatas, strict=True):
+                pairs.append((
+                    document,
+                    {
+                        "filename": str(metadata["filename"]),
+                        "page": int(metadata["page"]),
+                        "bbox": str(metadata.get("bbox", "")),
+                    },
+                ))
+            return pairs
+        except RuntimeError:
+            return self._brute_force_query(user_id, query_embedding, effective_k)
+
+    def _brute_force_query(
+        self,
+        user_id: int,
+        query_embedding: list[float],
+        k: int,
+    ) -> list[tuple[str, dict]]:
+        """Cosine-similarity search over all chunks — used when HNSW fails."""
+        collection = self._get_collection(user_id)
+        payload = collection.get(include=["documents", "embeddings", "metadatas"])
+        docs = payload.get("documents") or []
+        raw_embs = payload.get("embeddings")
+        embs = raw_embs if raw_embs is not None else []
+        metas = payload.get("metadatas") or []
+        if not docs:
+            return []
+
+        q = np.array(query_embedding, dtype=float)
+        q_norm = q / (np.linalg.norm(q) + 1e-10)
+        scores: list[tuple[float, int]] = []
+        for i, emb in enumerate(embs):
+            e = np.array(list(emb), dtype=float)
+            e_norm = e / (np.linalg.norm(e) + 1e-10)
+            scores.append((float(np.dot(q_norm, e_norm)), i))
+        scores.sort(key=lambda x: -x[0])
+
+        pairs: list[tuple[str, dict]] = []
+        for _, idx in scores[:k]:
+            meta = metas[idx]
+            pairs.append((
+                docs[idx],
+                {
+                    "filename": str(meta["filename"]),
+                    "page": int(meta["page"]),
+                    "bbox": str(meta.get("bbox", "")),
+                },
+            ))
         return pairs
+
+    def get_all_chunks_with_embeddings(self, user_id: int) -> list[dict]:
+        """Return every chunk with its embedding and metadata for the given user."""
+        collection = self._get_collection(user_id)
+        if collection.count() == 0:
+            return []
+        payload = collection.get(include=["documents", "embeddings", "metadatas"])
+        ids = payload.get("ids") or []
+        docs = payload.get("documents") or []
+        raw_embeddings = payload.get("embeddings")
+        embeddings = raw_embeddings if raw_embeddings is not None else []
+        metadatas = payload.get("metadatas") or []
+        result = []
+        for chunk_id, text, emb, meta in zip(ids, docs, embeddings, metadatas):
+            result.append({
+                "id": chunk_id,
+                "text": text,
+                "embedding": list(emb),
+                "filename": str(meta.get("filename", "")),
+                "page": int(meta.get("page", 1)),
+            })
+        return result
 
     def delete_document(self, user_id: int, document_id: str) -> None:
         """Remove every chunk tagged with ``document_id`` from the user's collection."""

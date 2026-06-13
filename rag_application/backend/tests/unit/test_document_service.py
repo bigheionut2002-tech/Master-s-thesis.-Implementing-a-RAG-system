@@ -45,7 +45,11 @@ def service(tmp_path: Path) -> tuple[DocumentService, VectorStore, _StubEmbeddin
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     store = VectorStore(client)
     embeddings = _StubEmbeddings()
-    doc_service = DocumentService(vector_store=store, embedding_service=embeddings)
+    doc_service = DocumentService(
+        vector_store=store,
+        embedding_service=embeddings,
+        upload_dir=tmp_path / "uploads",
+    )
     return doc_service, store, embeddings
 
 

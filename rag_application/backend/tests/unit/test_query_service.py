@@ -58,13 +58,16 @@ def seeded_store(tmp_path: Path) -> VectorStore:
     return store
 
 
-def test_answer_returns_llm_reply_and_unique_sources(seeded_store: VectorStore) -> None:
+def test_answer_returns_llm_reply_and_unique_sources(
+    seeded_store: VectorStore, tmp_path: Path
+) -> None:
     embeddings = _FakeEmbeddings(vector=[1.0, 0.0, 0.0])
     generator = _FakeGenerator()
     service = QueryService(
         embedding_service=embeddings,  # type: ignore[arg-type]
         vector_store=seeded_store,
         generation_service=generator,  # type: ignore[arg-type]
+        upload_dir=tmp_path,
         top_k=5,
     )
 
@@ -88,6 +91,7 @@ def test_answer_with_empty_collection_returns_fallback(tmp_path: Path) -> None:
         embedding_service=embeddings,  # type: ignore[arg-type]
         vector_store=store,
         generation_service=generator,  # type: ignore[arg-type]
+        upload_dir=tmp_path,
     )
 
     response = service.answer(user_id=42, question="Orice intrebare")
@@ -114,6 +118,7 @@ def test_answer_deduplicates_sources_by_filename_and_page(tmp_path: Path) -> Non
         embedding_service=_FakeEmbeddings(vector=[1.0, 0.0, 0.0]),  # type: ignore[arg-type]
         vector_store=store,
         generation_service=_FakeGenerator(),  # type: ignore[arg-type]
+        upload_dir=tmp_path,
     )
 
     response = service.answer(user_id=1, question="anything")

@@ -110,7 +110,11 @@ def get_document_service(
     vector_store: VectorStore = Depends(get_vector_store),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
 ) -> DocumentService:
-    return DocumentService(vector_store=vector_store, embedding_service=embedding_service)
+    return DocumentService(
+        vector_store=vector_store,
+        embedding_service=embedding_service,
+        upload_dir=get_settings().upload_dir,
+    )
 
 
 def get_query_service(
@@ -122,4 +126,5 @@ def get_query_service(
         embedding_service=embedding_service,
         vector_store=vector_store,
         generation_service=generation_service,
+        upload_dir=get_settings().upload_dir,
     )

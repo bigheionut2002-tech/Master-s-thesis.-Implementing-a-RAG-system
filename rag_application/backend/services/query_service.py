@@ -8,7 +8,11 @@ deduplicated list of source citations.
 
 from __future__ import annotations
 
+import base64
 import logging
+from pathlib import Path
+
+import fitz  # PyMuPDF
 
 from core.constants import TOP_K_RESULTS
 from models.schemas import QueryResponse, SourceCitation
@@ -42,11 +46,13 @@ class QueryService:
         embedding_service: EmbeddingService,
         vector_store: VectorStore,
         generation_service: GenerationService,
+        upload_dir: Path,
         top_k: int = TOP_K_RESULTS,
     ) -> None:
         self._embeddings = embedding_service
         self._vector_store = vector_store
         self._generation = generation_service
+        self._upload_dir = upload_dir
         self._top_k = top_k
 
     def answer(self, user_id: int, question: str) -> QueryResponse:
@@ -66,29 +72,63 @@ class QueryService:
         prompt = _PROMPT_TEMPLATE.format(context=context, question=question)
         answer_text = self._generation.generate(prompt).strip()
 
-        sources = self._deduplicate_sources(retrieved)
+        sources = self._build_sources_with_previews(user_id, retrieved)
         return QueryResponse(answer=answer_text, sources=sources)
 
     @staticmethod
-    def _format_context(
-        retrieved: list[tuple[str, SourceCitation]],
-    ) -> str:
+    def _format_context(retrieved: list[tuple[str, dict]]) -> str:
         blocks: list[str] = []
-        for index, (chunk, citation) in enumerate(retrieved, start=1):
-            header = f"[{index}] {citation.filename} (page {citation.page})"
+        for index, (chunk, meta) in enumerate(retrieved, start=1):
+            header = f"[{index}] {meta['filename']} (page {meta['page']})"
             blocks.append(f"{header}\n{chunk}")
         return "\n\n".join(blocks)
 
-    @staticmethod
-    def _deduplicate_sources(
-        retrieved: list[tuple[str, SourceCitation]],
+    def _build_sources_with_previews(
+        self,
+        user_id: int,
+        retrieved: list[tuple[str, dict]],
     ) -> list[SourceCitation]:
-        seen: set[tuple[str, int]] = set()
-        unique: list[SourceCitation] = []
-        for _, citation in retrieved:
-            key = (citation.filename, citation.page)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(citation)
-        return unique
+        # Group bbox strings by (filename, page) — one page may have multiple chunks.
+        bboxes_by_page: dict[tuple[str, int], list[str]] = {}
+        for _chunk, meta in retrieved:
+            key = (meta["filename"], meta["page"])
+            if key not in bboxes_by_page:
+                bboxes_by_page[key] = []
+            bboxes_by_page[key].append(meta.get("bbox", ""))
+
+        result: list[SourceCitation] = []
+        for (filename, page), bboxes in bboxes_by_page.items():
+            image_b64 = self._render_page_preview(user_id, filename, page, bboxes)
+            result.append(SourceCitation(filename=filename, page=page, page_image_b64=image_b64))
+        return result
+
+    def _render_page_preview(
+        self,
+        user_id: int,
+        filename: str,
+        page: int,
+        bboxes: list[str],
+    ) -> str:
+        pdf_path = self._upload_dir / str(user_id) / filename
+        if not pdf_path.exists():
+            logger.warning("PDF not found on disk: %s", pdf_path)
+            return ""
+        try:
+            doc = fitz.open(str(pdf_path))
+            try:
+                page_obj = doc[page - 1]
+                for bbox_str in bboxes:
+                    if not bbox_str:
+                        continue
+                    x0, y0, x1, y1 = map(float, bbox_str.split(","))
+                    rect = fitz.Rect(x0, y0, x1, y1)
+                    annot = page_obj.add_highlight_annot(rect)
+                    annot.set_colors(stroke=(1, 1, 0))
+                    annot.update()
+                pixmap = page_obj.get_pixmap(dpi=150)
+                return base64.b64encode(pixmap.tobytes("png")).decode()
+            finally:
+                doc.close()
+        except Exception:
+            logger.warning("Failed to render preview for %s page %d", filename, page)
+            return ""

@@ -24,9 +24,11 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   apiDeleteDocument,
+  apiGetVectorMap,
   apiListDocuments,
   apiUploadDocument,
   extractErrorMessage,
+  type ChunkPoint,
   type DocumentMetadata,
 } from "@/lib/api"
 
@@ -36,6 +38,7 @@ export function Dashboard() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [vectorPoints, setVectorPoints] = useState<ChunkPoint[] | null>(null)
 
   const loadDocuments = async () => {
     try {
@@ -47,8 +50,18 @@ export function Dashboard() {
     }
   }
 
+  const loadVectorMap = async () => {
+    try {
+      const result = await apiGetVectorMap()
+      setVectorPoints(result.points)
+    } catch {
+      setVectorPoints([])
+    }
+  }
+
   useEffect(() => {
     loadDocuments()
+    loadVectorMap()
   }, [])
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -68,6 +81,7 @@ export function Dashboard() {
       setIsDialogOpen(false)
       setSelectedFile(null)
       await loadDocuments()
+      await loadVectorMap()
     } catch (error: unknown) {
       toast.error(extractErrorMessage(error))
     } finally {
@@ -81,6 +95,7 @@ export function Dashboard() {
       await apiDeleteDocument(doc.id)
       toast.success(`Deleted ${doc.filename}`)
       await loadDocuments()
+      await loadVectorMap()
     } catch (error: unknown) {
       toast.error(extractErrorMessage(error))
     } finally {
@@ -158,37 +173,42 @@ export function Dashboard() {
       ) : documents.length === 0 ? (
         <EmptyState onUpload={() => setIsDialogOpen(true)} />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {documents.map((doc) => (
-            <Card key={doc.id} className="flex flex-col">
-              <CardHeader>
-                <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10">
-                    <FileText className="h-5 w-5 text-foreground" />
+        <div className="space-y-8">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {documents.map((doc) => (
+              <Card key={doc.id} className="flex flex-col">
+                <CardHeader>
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-primary/10">
+                      <FileText className="h-5 w-5 text-foreground" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <CardTitle className="truncate text-base">{doc.filename}</CardTitle>
+                      <CardDescription>
+                        {doc.num_pages} {doc.num_pages === 1 ? "page" : "pages"} · {doc.num_chunks} chunks
+                      </CardDescription>
+                    </div>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <CardTitle className="truncate text-base">{doc.filename}</CardTitle>
-                    <CardDescription>
-                      {doc.num_pages} {doc.num_pages === 1 ? "page" : "pages"} · {doc.num_chunks} chunks
-                    </CardDescription>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="flex-1" />
-              <CardFooter>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-2"
-                  onClick={() => handleDelete(doc)}
-                  disabled={deletingId === doc.id}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  {deletingId === doc.id ? "Deleting…" : "Delete"}
-                </Button>
-              </CardFooter>
-            </Card>
-          ))}
+                </CardHeader>
+                <CardContent className="flex-1" />
+                <CardFooter>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => handleDelete(doc)}
+                    disabled={deletingId === doc.id}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deletingId === doc.id ? "Deleting…" : "Delete"}
+                  </Button>
+                </CardFooter>
+              </Card>
+            ))}
+          </div>
+          {vectorPoints !== null && vectorPoints.length > 0 ? (
+            <VectorMap points={vectorPoints} />
+          ) : null}
         </div>
       )}
     </div>
@@ -241,5 +261,102 @@ function EmptyState({ onUpload }: EmptyStateProps) {
         </Button>
       </CardContent>
     </Card>
+  )
+}
+
+interface VectorMapProps {
+  points: ChunkPoint[]
+}
+
+const DOC_COLORS = [
+  "#6366f1", "#f59e0b", "#10b981", "#ef4444", "#3b82f6",
+  "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#84cc16",
+]
+
+function VectorMap({ points }: VectorMapProps) {
+  const [hovered, setHovered] = useState<ChunkPoint | null>(null)
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 })
+
+  if (points.length === 0) return null
+
+  const W = 640
+  const H = 380
+  const PAD = 32
+
+  const toSvg = (v: number, dim: number) =>
+    PAD + ((v + 1) / 2) * (dim - PAD * 2)
+
+  const filenames = [...new Set(points.map((p) => p.filename))]
+  const colorOf = (filename: string) =>
+    DOC_COLORS[filenames.indexOf(filename) % DOC_COLORS.length]
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-lg font-semibold">Vector Space</h2>
+        <p className="text-sm text-muted-foreground">
+          PCA projection of all chunk embeddings. Each dot is one chunk — hover to preview.
+        </p>
+      </div>
+
+      <div className="relative rounded-lg border bg-card overflow-hidden">
+        <svg
+          width="100%"
+          viewBox={`0 0 ${W} ${H}`}
+          className="block"
+          onMouseLeave={() => setHovered(null)}
+        >
+          {points.map((p) => (
+            <circle
+              key={p.id}
+              cx={toSvg(p.x, W)}
+              cy={toSvg(-p.y, H)}
+              r={6}
+              fill={colorOf(p.filename)}
+              fillOpacity={hovered?.id === p.id ? 1 : 0.7}
+              stroke={hovered?.id === p.id ? "white" : "transparent"}
+              strokeWidth={2}
+              className="cursor-pointer transition-all"
+              onMouseEnter={(e) => {
+                const rect = (e.currentTarget.ownerSVGElement as SVGSVGElement)
+                  .getBoundingClientRect()
+                setTooltipPos({
+                  x: e.clientX - rect.left,
+                  y: e.clientY - rect.top,
+                })
+                setHovered(p)
+              }}
+            />
+          ))}
+        </svg>
+
+        {hovered !== null && (
+          <div
+            className="pointer-events-none absolute z-10 max-w-xs rounded-lg border bg-popover px-3 py-2 text-xs shadow-lg"
+            style={{
+              left: Math.min(tooltipPos.x + 12, W - 220),
+              top: Math.max(tooltipPos.y - 60, 8),
+            }}
+          >
+            <p className="font-medium text-foreground">
+              {hovered.filename} · p.{hovered.page}
+            </p>
+            <p className="mt-1 text-muted-foreground line-clamp-3">{hovered.text}</p>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        {filenames.map((name) => (
+          <div key={name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span
+              className="h-2.5 w-2.5 rounded-full"
+              style={{ background: colorOf(name) }}
+            />
+            {name}
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
